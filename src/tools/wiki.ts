@@ -235,7 +235,7 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
             try {
               const accessToken = await tokenProvider();
               const baseUrl = connection.serverUrl.replace(/\/$/, "");
-              const restUrl = `${baseUrl}/${resolvedProject}/_apis/wiki/wikis/${resolvedWiki}/pages/${parsed.pageId}?includeContent=true&api-version=7.1`;
+              const restUrl = `${baseUrl}/${resolvedProject}/_apis/wiki/wikis/${resolvedWiki}/pages/${parsed.pageId}?includeContent=true&api-version=${apiVersion}`;
 
               const isBasicAuth = process.env["ADO_MCP_AUTH_TYPE"] == "basic";
               const authHeader = isBasicAuth ? `Basic ${Buffer.from(":" + accessToken).toString("base64")}` : `Bearer ${accessToken}`;
@@ -309,7 +309,7 @@ function configureWikiTools(server: McpServer, tokenProvider: () => Promise<stri
         // Build the URL for the wiki page API with version descriptor
         const baseUrl = connection.serverUrl;
         const projectParam = project || "";
-        const url = `${baseUrl}/${projectParam}/_apis/wiki/wikis/${wikiIdentifier}/pages?path=${encodedPath}&versionDescriptor.versionType=branch&versionDescriptor.version=${encodeURIComponent(branch)}&api-version=7.1`;
+        const url = `${baseUrl}/${projectParam}/_apis/wiki/wikis/${wikiIdentifier}/pages?path=${encodedPath}&versionDescriptor.versionType=branch&versionDescriptor.version=${encodeURIComponent(branch)}&api-version=${apiVersion}`;
 
         const isBasicAuth = process.env["ADO_MCP_AUTH_TYPE"] == "basic";
         const authHeader = isBasicAuth ? `Basic ${Buffer.from(":" + accessToken).toString("base64")}` : `Bearer ${accessToken}`;
