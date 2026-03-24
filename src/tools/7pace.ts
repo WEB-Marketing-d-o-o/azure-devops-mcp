@@ -14,7 +14,7 @@ const SEVENP_TOOLS = {
   delete_time_log: "7pace_delete_time_log",
 };
 
-const SEVENP_API_VERSION = "3.2";
+const SEVENP_API_VERSION = "3.1";
 
 // Activity types konfigurirani u 7pace Timetrackeru
 const ACTIVITY_TYPES = [
