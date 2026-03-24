@@ -101,9 +101,11 @@ async function sevenPaceFetch(
   const creds = getNtlmCredentials();
 
   // Dinamični import — paket mora biti instaliran: npm install httpntlm
+  // httpntlm je CJS modul — u ESM kontekstu export može biti na .default
   let httpntlm: typeof import("httpntlm");
   try {
-    httpntlm = await import("httpntlm");
+    const mod = await import("httpntlm");
+    httpntlm = (mod.default ?? mod) as typeof import("httpntlm");
   } catch {
     throw new Error("Paket 'httpntlm' nije instaliran. Pokreni: npm install httpntlm");
   }
@@ -371,7 +373,8 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
 
         let httpntlm: typeof import("httpntlm");
         try {
-          httpntlm = await import("httpntlm");
+          const mod = await import("httpntlm");
+          httpntlm = (mod.default ?? mod) as typeof import("httpntlm");
         } catch {
           throw new Error("Paket 'httpntlm' nije instaliran. Pokreni: npm install httpntlm");
         }
