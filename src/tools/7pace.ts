@@ -148,23 +148,29 @@ async function sevenPaceFetch(
   });
 }
 
-// Dohvati ID activity typea po imenu — 7pace API prima ID, ne ime
-async function resolveActivityTypeId(activityType: ActivityType | undefined, apiBase: string, userAgent: string): Promise<string | undefined> {
+// Hardkodirani IDevi activity typeova dohvaćeni iz:
+// http://tfsmoon.wem.local:8090/api/New/rest/activityTypes?api-version=3.1
+const ACTIVITY_TYPE_IDS: Record<ActivityType, string> = {
+  "[Not Set]": "00000000-0000-0000-0000-000000000000",
+  "Administration": "03af7792-8e05-ec11-814c-00155dfa0304",
+  "Billable Development": "481cacaf-afb5-ec11-8151-00155dfa0304",
+  "Billable Requirements": "0fc5c144-b1b5-ec11-8151-00155dfa0304",
+  "Billable Slicing": "3244c350-b1b5-ec11-8151-00155dfa0304",
+  "Billable Support": "b9a1ed96-ffc5-ec11-8152-00155dfa0304",
+  "Design": "04af7792-8e05-ec11-814c-00155dfa0304",
+  "Development": "05af7792-8e05-ec11-814c-00155dfa0304",
+  "Process": "06af7792-8e05-ec11-814c-00155dfa0304",
+  "Requirements": "08af7792-8e05-ec11-814c-00155dfa0304",
+  "Sales": "2ea7b401-beb4-ec11-8151-00155dfa0304",
+  "Sales requirements": "a3331fbc-cc60-ed11-8159-00155dfa0304",
+  "Slicing": "e9fc940f-beb4-ec11-8151-00155dfa0304",
+  "Support": "740a16b3-93e8-ec11-8153-00155dfa0304",
+  "Testing": "09af7792-8e05-ec11-814c-00155dfa0304",
+};
+
+function resolveActivityTypeId(activityType: ActivityType | undefined): string | undefined {
   if (!activityType || activityType === "[Not Set]") return undefined;
-
-  const res = await sevenPaceFetch("GET", apiBase, "activityTypes", userAgent);
-  if (!res.ok) {
-    throw new Error(`Ne mogu dohvatiti activity types: HTTP ${res.status} ${res.statusText}`);
-  }
-
-  const body = res.data as { data?: Array<{ id: string; name: string }> };
-  const match = body.data?.find((at) => at.name.toLowerCase() === activityType.toLowerCase());
-
-  if (!match) {
-    throw new Error(`Activity type "${activityType}" nije pronađen. Dostupni: ${body.data?.map((a) => a.name).join(", ")}`);
-  }
-
-  return match.id;
+  return ACTIVITY_TYPE_IDS[activityType];
 }
 
 // ─── Tool konfiguracija ───────────────────────────────────────────────────────
@@ -190,7 +196,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
         const apiBase = get7paceApiBase(connection);
         const userAgent = userAgentProvider();
 
-        const activityTypeId = await resolveActivityTypeId(activityType, apiBase, userAgent);
+        const activityTypeId = resolveActivityTypeId(activityType);
 
         const body: Record<string, unknown> = {
           workItemId,
@@ -260,7 +266,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
         const apiBase = get7paceApiBase(connection);
         const userAgent = userAgentProvider();
 
-        const activityTypeId = await resolveActivityTypeId(activityType, apiBase, userAgent);
+        const activityTypeId = resolveActivityTypeId(activityType);
         const hoursPerTask = totalHours / workItemIds.length;
         const secondsPerTask = hoursToSeconds(hoursPerTask);
         const timestamp = toTimestamp(date);
