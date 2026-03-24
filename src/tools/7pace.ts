@@ -54,13 +54,7 @@ function toTimestamp(dateStr?: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00:00`;
 }
 
-// Isti auth header pattern kao u workitems.ts
-function buildAuthHeader(accessToken: string): string {
-  const isBasicAuth = process.env["ADO_MCP_AUTH_TYPE"] === "basic";
-  return isBasicAuth ? `Basic ${Buffer.from(":" + accessToken).toString("base64")}` : `Bearer ${accessToken}`;
-}
-
-// Izvuci 7pace API base URL iz postojeće ADO konekcije — bez dodatnih parametara.
+// Izvuci 7pace API base URL iz postojeće ADO konekcije.
 // serverUrl je npr. "http://tfsmoon.wem.local:8080/tfs/New"
 // Collection name je zadnji segment patha (npr. "New").
 // 7pace je na portu 8090 istog hosta: "http://tfsmoon.wem.local:8090/api/New/rest"
@@ -79,43 +73,84 @@ function get7paceApiBase(connection: WebApi): string {
   return `${url.origin}/api/${collection}/rest`;
 }
 
+// NTLM kredencijali — lozinka mora biti eksplicitno postavljena u env,
+// ostalo se čita iz Windows environment koji Node.js nasljeđuje automatski.
+function getNtlmCredentials(): { username: string; password: string; domain: string; workstation: string } {
+  const password = process.env["ADO_7PACE_NTLM_PASS"];
+  if (!password) {
+    throw new Error("ADO_7PACE_NTLM_PASS nije postavljen. Dodaj ga u mcp.json env blok.");
+  }
+  return {
+    username: process.env["ADO_7PACE_NTLM_USER"] ?? process.env["USERNAME"] ?? "",
+    password,
+    domain: process.env["ADO_7PACE_NTLM_DOMAIN"] ?? process.env["USERDOMAIN"] ?? "",
+    workstation: process.env["COMPUTERNAME"] ?? "",
+  };
+}
+
+// NTLM fetch wrapper — koristi httpntlm paket umjesto nativnog fetch
+// jer Node.js nativni fetch ne podržava Negotiate/NTLM autentikaciju.
 async function sevenPaceFetch(
   method: "GET" | "POST" | "DELETE",
   apiBase: string,
   path: string,
-  authHeader: string,
   userAgent: string,
   body?: unknown
 ): Promise<{ ok: boolean; status: number; statusText: string; data: unknown }> {
   const url = `${apiBase}/${path}?api-version=${SEVENP_API_VERSION}`;
+  const creds = getNtlmCredentials();
 
-  const response = await fetch(url, {
-    method,
+  // Dinamični import — paket mora biti instaliran: npm install httpntlm
+  let httpntlm: typeof import("httpntlm");
+  try {
+    httpntlm = await import("httpntlm");
+  } catch {
+    throw new Error("Paket 'httpntlm' nije instaliran. Pokreni: npm install httpntlm");
+  }
+
+  const options = {
+    url,
+    username: creds.username,
+    password: creds.password,
+    domain: creds.domain,
+    workstation: creds.workstation,
     headers: {
-      "Authorization": authHeader,
       "Content-Type": "application/json",
       "Accept": "application/json",
       "User-Agent": userAgent,
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  };
+
+  return new Promise((resolve, reject) => {
+    const handler = (err: Error | null, res: { statusCode: number; statusMessage: string; body: string }) => {
+      if (err) return reject(err);
+      let data: unknown;
+      try {
+        data = res.body ? JSON.parse(res.body) : null;
+      } catch {
+        data = res.body ?? null;
+      }
+      resolve({
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        status: res.statusCode,
+        statusText: res.statusMessage,
+        data,
+      });
+    };
+
+    if (method === "GET") httpntlm.get(options, handler);
+    else if (method === "POST") httpntlm.post(options, handler);
+    else if (method === "DELETE") httpntlm["delete"](options, handler);
+    else reject(new Error(`Nepodržana HTTP metoda: ${method}`));
   });
-
-  let data: unknown;
-  try {
-    const text = await response.text();
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  return { ok: response.ok, status: response.status, statusText: response.statusText, data };
 }
 
 // Dohvati ID activity typea po imenu — 7pace API prima ID, ne ime
-async function resolveActivityTypeId(activityType: ActivityType | undefined, apiBase: string, authHeader: string, userAgent: string): Promise<string | undefined> {
+async function resolveActivityTypeId(activityType: ActivityType | undefined, apiBase: string, userAgent: string): Promise<string | undefined> {
   if (!activityType || activityType === "[Not Set]") return undefined;
 
-  const res = await sevenPaceFetch("GET", apiBase, "activityTypes", authHeader, userAgent);
+  const res = await sevenPaceFetch("GET", apiBase, "activityTypes", userAgent);
   if (!res.ok) {
     throw new Error(`Ne mogu dohvatiti activity types: HTTP ${res.status} ${res.statusText}`);
   }
@@ -132,7 +167,7 @@ async function resolveActivityTypeId(activityType: ActivityType | undefined, api
 
 // ─── Tool konfiguracija ───────────────────────────────────────────────────────
 
-function configure7paceTools(server: McpServer, tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
+function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
   // ── 1. log_time ──────────────────────────────────────────────────────────────
   server.tool(
     SEVENP_TOOLS.log_time,
@@ -149,11 +184,11 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
     },
     async ({ workItemId, hours, activityType, date, comment }) => {
       try {
-        const [connection, accessToken] = await Promise.all([connectionProvider(), tokenProvider()]);
+        const connection = await connectionProvider();
         const apiBase = get7paceApiBase(connection);
-        const authHeader = buildAuthHeader(accessToken);
+        const userAgent = userAgentProvider();
 
-        const activityTypeId = await resolveActivityTypeId(activityType, apiBase, authHeader, userAgentProvider());
+        const activityTypeId = await resolveActivityTypeId(activityType, apiBase, userAgent);
 
         const body: Record<string, unknown> = {
           workItemId,
@@ -163,7 +198,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
         if (activityTypeId) body.activityTypeId = activityTypeId;
         if (comment) body.comment = comment;
 
-        const res = await sevenPaceFetch("POST", apiBase, "workLogs", authHeader, userAgentProvider(), body);
+        const res = await sevenPaceFetch("POST", apiBase, "workLogs", userAgent, body);
 
         if (!res.ok) {
           return {
@@ -219,11 +254,11 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
     },
     async ({ workItemIds, totalHours, activityType, date, comment }) => {
       try {
-        const [connection, accessToken] = await Promise.all([connectionProvider(), tokenProvider()]);
+        const connection = await connectionProvider();
         const apiBase = get7paceApiBase(connection);
-        const authHeader = buildAuthHeader(accessToken);
+        const userAgent = userAgentProvider();
 
-        const activityTypeId = await resolveActivityTypeId(activityType, apiBase, authHeader, userAgentProvider());
+        const activityTypeId = await resolveActivityTypeId(activityType, apiBase, userAgent);
         const hoursPerTask = totalHours / workItemIds.length;
         const secondsPerTask = hoursToSeconds(hoursPerTask);
         const timestamp = toTimestamp(date);
@@ -242,7 +277,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
             if (activityTypeId) body.activityTypeId = activityTypeId;
             if (comment) body.comment = comment;
 
-            const res = await sevenPaceFetch("POST", apiBase, "workLogs", authHeader, userAgentProvider(), body);
+            const res = await sevenPaceFetch("POST", apiBase, "workLogs", userAgent, body);
 
             if (!res.ok) {
               results.push({ workItemId, hours: hoursPerTask, success: false, error: `HTTP ${res.status} ${res.statusText}` });
@@ -309,9 +344,9 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
     },
     async ({ workItemId, date, dateFrom, dateTo, top }) => {
       try {
-        const [connection, accessToken] = await Promise.all([connectionProvider(), tokenProvider()]);
+        const connection = await connectionProvider();
         const apiBase = get7paceApiBase(connection);
-        const authHeader = buildAuthHeader(accessToken);
+        const userAgent = userAgentProvider();
 
         const params: string[] = [`api-version=${SEVENP_API_VERSION}`, `$count=${top}`];
 
@@ -329,30 +364,49 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
           if (dateTo) params.push(`$toTimestamp=${toTimestamp(dateTo)}`);
         }
 
-        const url = `${apiBase}/workLogs?${params.join("&")}`;
-        const response = await fetch(url, {
-          headers: {
-            "Authorization": authHeader,
-            "Accept": "application/json",
-            "User-Agent": userAgentProvider(),
-          },
-        });
+        const path = `workLogs?${params.join("&")}`;
+        // GET s query stringom — zaobiđi sevenPaceFetch koji dodaje vlastiti ?api-version
+        const url = `${apiBase}/${path}`;
+        const creds = getNtlmCredentials();
 
-        let data: unknown;
+        let httpntlm: typeof import("httpntlm");
         try {
-          data = response.ok ? await response.json() : await response.text();
+          httpntlm = await import("httpntlm");
         } catch {
-          data = null;
+          throw new Error("Paket 'httpntlm' nije instaliran. Pokreni: npm install httpntlm");
         }
 
-        if (!response.ok) {
+        const res: { ok: boolean; status: number; statusText: string; data: unknown } = await new Promise((resolve, reject) => {
+          httpntlm.get(
+            {
+              url,
+              username: creds.username,
+              password: creds.password,
+              domain: creds.domain,
+              workstation: creds.workstation,
+              headers: { "Accept": "application/json", "User-Agent": userAgent },
+            },
+            (err: Error | null, r: { statusCode: number; statusMessage: string; body: string }) => {
+              if (err) return reject(err);
+              let data: unknown;
+              try {
+                data = r.body ? JSON.parse(r.body) : null;
+              } catch {
+                data = r.body ?? null;
+              }
+              resolve({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode, statusText: r.statusMessage, data });
+            }
+          );
+        });
+
+        if (!res.ok) {
           return {
-            content: [{ type: "text", text: `Greška pri dohvatu logova: HTTP ${response.status} ${response.statusText}\n${JSON.stringify(data, null, 2)}` }],
+            content: [{ type: "text", text: `Greška pri dohvatu logova: HTTP ${res.status} ${res.statusText}\n${JSON.stringify(res.data, null, 2)}` }],
             isError: true,
           };
         }
 
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }] };
       } catch (error) {
         return {
           content: [{ type: "text", text: `Greška pri dohvatu logova: ${error instanceof Error ? error.message : "Nepoznata greška"}` }],
@@ -371,11 +425,11 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
     },
     async ({ logId }) => {
       try {
-        const [connection, accessToken] = await Promise.all([connectionProvider(), tokenProvider()]);
+        const connection = await connectionProvider();
         const apiBase = get7paceApiBase(connection);
-        const authHeader = buildAuthHeader(accessToken);
+        const userAgent = userAgentProvider();
 
-        const res = await sevenPaceFetch("DELETE", apiBase, `workLogs/${logId}`, authHeader, userAgentProvider());
+        const res = await sevenPaceFetch("DELETE", apiBase, `workLogs/${logId}`, userAgent);
 
         if (!res.ok) {
           return {
