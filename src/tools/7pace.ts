@@ -173,9 +173,20 @@ function resolveActivityTypeId(activityType: ActivityType | undefined): string |
   return ACTIVITY_TYPE_IDS[activityType];
 }
 
+// Nakon uspješnog upisa sati, označi work item da su sati uneseni
+async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>): Promise<void> {
+  try {
+    const connection = await connectionProvider();
+    const workItemApi = await connection.getWorkItemTrackingApi();
+    await workItemApi.updateWorkItem(null, [{ op: "add", path: "/fields/Custom.NezaboraviunijetiTimeTracker", value: "Unio sam vrijednost u Time Tracker" }], workItemId);
+  } catch {
+    // Ne blokiraj glavni flow ako update ne uspije — sati su već upisani
+  }
+}
+
 // ─── Tool konfiguracija ───────────────────────────────────────────────────────
 
-function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
+function configure7paceTools(server: McpServer, tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
   // ── 1. log_time ──────────────────────────────────────────────────────────────
   server.tool(
     SEVENP_TOOLS.log_time,
@@ -216,6 +227,10 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
         }
 
         const logData = res.data as { data?: { id?: string } };
+
+        // Automatski označi work item da su sati uneseni
+        await markTimeTrackerEntered(workItemId, connectionProvider);
+
         return {
           content: [
             {
@@ -291,6 +306,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
               results.push({ workItemId, hours: hoursPerTask, success: false, error: `HTTP ${res.status} ${res.statusText}` });
             } else {
               const logData = res.data as { data?: { id?: string } };
+              await markTimeTrackerEntered(workItemId, connectionProvider);
               results.push({ workItemId, hours: hoursPerTask, success: true, logId: logData?.data?.id ?? undefined });
             }
           } catch (error) {
