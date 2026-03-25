@@ -1,11 +1,6 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebApi } from "azure-devops-node-api";
 import { z } from "zod";
-
-// ─── Konstante ────────────────────────────────────────────────────────────────
 
 const SEVENP_TOOLS = {
   log_time: "7pace_log_time",
@@ -16,7 +11,7 @@ const SEVENP_TOOLS = {
 
 const SEVENP_API_VERSION = "3.1";
 
-// Activity types konfigurirani u 7pace Timetrackeru
+//Activity types konfigurirani u 7pace Timetrackeru
 const ACTIVITY_TYPES = [
   "[Not Set]",
   "Administration",
@@ -37,13 +32,13 @@ const ACTIVITY_TYPES = [
 
 type ActivityType = (typeof ACTIVITY_TYPES)[number];
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+//Helpers
 
 function hoursToSeconds(hours: number): number {
   return Math.round(hours * 3600);
 }
 
-// Lokalni ISO datetime bez timezone — 7pace on-prem očekuje "2024-03-15T00:00:00"
+//Lokalni ISO datetime bez timezone — 7pace on-prem očekuje "2024-03-15T00:00:00"
 function toTimestamp(dateStr?: string): string {
   const d = dateStr ? new Date(dateStr) : new Date();
   if (isNaN(d.getTime())) {
@@ -54,11 +49,7 @@ function toTimestamp(dateStr?: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00:00`;
 }
 
-// Izvuci 7pace API base URL iz postojeće ADO konekcije.
-// serverUrl je npr. "http://tfsmoon.wem.local:8080/tfs/New"
-// Collection name je zadnji segment patha (npr. "New").
-// 7pace je na portu 8090 istog hosta: "http://tfsmoon.wem.local:8090/api/New/rest"
-// Override moguć kroz ADO_7PACE_URL env varijablu (samo host+port, bez patha).
+//7pace je na portu 8090 istog hosta: "http://tfsmoon.wem.local:8090/api/New/rest"
 function get7paceApiBase(connection: WebApi): string {
   const serverUrl = connection.serverUrl.replace(/\/$/, "");
   const collection = serverUrl.split("/").pop() ?? "DefaultCollection";
@@ -73,8 +64,8 @@ function get7paceApiBase(connection: WebApi): string {
   return `${url.origin}/api/${collection}/rest`;
 }
 
-// NTLM kredencijali — lozinka mora biti eksplicitno postavljena u env,
-// ostalo se čita iz Windows environment koji Node.js nasljeđuje automatski.
+//NTLM credentials — lozinka mora biti eksplicitno postavljena u env,
+//ostalo se čita iz Windows environment koji Node.js nasljeđuje automatski.
 function getNtlmCredentials(): { username: string; password: string; domain: string; workstation: string } {
   const password = process.env["ADO_7PACE_NTLM_PASS"];
   if (!password) {
@@ -88,8 +79,8 @@ function getNtlmCredentials(): { username: string; password: string; domain: str
   };
 }
 
-// NTLM fetch wrapper — koristi httpntlm paket umjesto nativnog fetch
-// jer Node.js nativni fetch ne podržava Negotiate/NTLM autentikaciju.
+//NTLM fetch wrapper — koristi httpntlm paket umjesto nativnog fetch
+//jer Node.js nativni fetch ne podržava Negotiate/NTLM autentikaciju.
 async function sevenPaceFetch(
   method: "GET" | "POST" | "DELETE",
   apiBase: string,
@@ -99,9 +90,6 @@ async function sevenPaceFetch(
 ): Promise<{ ok: boolean; status: number; statusText: string; data: unknown }> {
   const url = `${apiBase}/${path}?api-version=${SEVENP_API_VERSION}`;
   const creds = getNtlmCredentials();
-
-  // Dinamični import — paket mora biti instaliran: npm install httpntlm
-  // httpntlm je CJS modul — u ESM kontekstu export može biti na .default
   let httpntlm: typeof import("httpntlm");
   try {
     const mod = await import("httpntlm");
@@ -148,8 +136,8 @@ async function sevenPaceFetch(
   });
 }
 
-// Hardkodirani IDevi activity typeova dohvaćeni iz:
-// http://tfsmoon.wem.local:8090/api/New/rest/activityTypes?api-version=3.1
+//Hardkodirani IDevi activity typeova dohvaćeni iz:
+//http://tfsmoon.wem.local:8090/api/New/rest/activityTypes?api-version=3.1
 const ACTIVITY_TYPE_IDS: Record<ActivityType, string> = {
   "[Not Set]": "00000000-0000-0000-0000-000000000000",
   "Administration": "03af7792-8e05-ec11-814c-00155dfa0304",
@@ -173,10 +161,9 @@ function resolveActivityTypeId(activityType: ActivityType | undefined): string |
   return ACTIVITY_TYPE_IDS[activityType];
 }
 
-// Nakon uspješnog upisa sati, označi work item da su sati uneseni
-// Nakon uspješnog upisa sati, označi work item da su sati uneseni.
-// Koristi NTLM auth (mlukanic credentials) jer PAT token (tfssetupm) nema
-// write permission na custom polje Custom.NezaboraviunijetiTimeTracker.
+//Nakon uspješnog upisa sati, označi work item da su sati uneseni
+//Koristi NTLM auth (AD credentials) jer PAT token (tfssetupm) nema
+//write permission na custom polje Custom.NezaboraviunijetiTimeTracker.
 async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>, userAgent: string): Promise<string | null> {
   try {
     const connection = await connectionProvider();
@@ -218,10 +205,10 @@ async function markTimeTrackerEntered(workItemId: number, connectionProvider: ()
   }
 }
 
-// ─── Tool konfiguracija ───────────────────────────────────────────────────────
+//Tool konfiguracija
 
 function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
-  // ── 1. log_time ──────────────────────────────────────────────────────────────
+  //log_time
   server.tool(
     SEVENP_TOOLS.log_time,
     "Upiši sate rada na određeni ADO task u 7pace Timetracker. " + "Primjer: 'zapiši na task 12345 3 sata developmenta'.",
@@ -262,7 +249,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
 
         const logData = res.data as { data?: { id?: string } };
 
-        // Automatski označi work item da su sati uneseni
+        //Automatski označi work item da su sati uneseni
         const markError = await markTimeTrackerEntered(workItemId, connectionProvider, userAgentProvider());
 
         return {
@@ -295,7 +282,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
     }
   );
 
-  // ── 2. log_time_distributed ──────────────────────────────────────────────────
+  //log_time_distributed
   server.tool(
     SEVENP_TOOLS.log_time_distributed,
     "Rasporedi ukupan broj sati ravnomjerno na više ADO taskova i upiši ih u 7pace Timetracker. " +
@@ -390,7 +377,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
     }
   );
 
-  // ── 3. get_logged_time ───────────────────────────────────────────────────────
+  //get_logged_time
   server.tool(
     SEVENP_TOOLS.get_logged_time,
     "Dohvati upisane sate iz 7pace Timetrackera. Može filtrirati po work itemu i/ili datumu.",
@@ -476,7 +463,7 @@ function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<st
     }
   );
 
-  // ── 4. delete_time_log ───────────────────────────────────────────────────────
+  //delete_time_log
   server.tool(
     SEVENP_TOOLS.delete_time_log,
     "Obriši postojeći unos sati iz 7pace Timetrackera po ID-u loga.",
