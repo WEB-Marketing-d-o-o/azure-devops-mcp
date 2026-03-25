@@ -174,11 +174,30 @@ function resolveActivityTypeId(activityType: ActivityType | undefined): string |
 }
 
 // Nakon uspješnog upisa sati, označi work item da su sati uneseni
-async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>): Promise<string | null> {
+async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>, tokenProvider: () => Promise<string>, userAgent: string): Promise<string | null> {
   try {
-    const connection = await connectionProvider();
-    const workItemApi = await connection.getWorkItemTrackingApi();
-    await workItemApi.updateWorkItem(null, [{ op: "add", path: "/fields/Custom.NezaboraviunijetiTimeTracker", value: "Unio sam vrijednost u Time Tracker" }], workItemId);
+    const [connection, accessToken] = await Promise.all([connectionProvider(), tokenProvider()]);
+    const orgUrl = connection.serverUrl.replace(/\/$/, "");
+    const isBasicAuth = process.env["ADO_MCP_AUTH_TYPE"] === "basic";
+    const authHeader = isBasicAuth ? `Basic ${Buffer.from(":" + accessToken).toString("base64")}` : `Bearer ${accessToken}`;
+
+    const patchDoc = [{ op: "add", path: "/fields/Custom.NezaboraviunijetiTimeTracker", value: "Unio sam vrijednost u Time Tracker" }];
+
+    const response = await fetch(`${orgUrl}/_apis/wit/workitems/${workItemId}?api-version=6.0`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": authHeader,
+        "Content-Type": "application/json-patch+json",
+        "Accept": "application/json",
+        "User-Agent": userAgent,
+      },
+      body: JSON.stringify(patchDoc),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return `HTTP ${response.status} ${response.statusText}: ${text}`;
+    }
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : "Nepoznata greška pri update work itema";
@@ -230,7 +249,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
         const logData = res.data as { data?: { id?: string } };
 
         // Automatski označi work item da su sati uneseni
-        const markError = await markTimeTrackerEntered(workItemId, connectionProvider);
+        const markError = await markTimeTrackerEntered(workItemId, connectionProvider, tokenProvider, userAgentProvider());
 
         return {
           content: [
@@ -308,7 +327,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
               results.push({ workItemId, hours: hoursPerTask, success: false, error: `HTTP ${res.status} ${res.statusText}` });
             } else {
               const logData = res.data as { data?: { id?: string } };
-              await markTimeTrackerEntered(workItemId, connectionProvider);
+              await markTimeTrackerEntered(workItemId, connectionProvider, tokenProvider, userAgentProvider());
               results.push({ workItemId, hours: hoursPerTask, success: true, logId: logData?.data?.id ?? undefined });
             }
           } catch (error) {
