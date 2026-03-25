@@ -174,13 +174,14 @@ function resolveActivityTypeId(activityType: ActivityType | undefined): string |
 }
 
 // Nakon uspješnog upisa sati, označi work item da su sati uneseni
-async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>): Promise<void> {
+async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>): Promise<string | null> {
   try {
     const connection = await connectionProvider();
     const workItemApi = await connection.getWorkItemTrackingApi();
     await workItemApi.updateWorkItem(null, [{ op: "add", path: "/fields/Custom.NezaboraviunijetiTimeTracker", value: "Unio sam vrijednost u Time Tracker" }], workItemId);
-  } catch {
-    // Ne blokiraj glavni flow ako update ne uspije — sati su već upisani
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : "Nepoznata greška pri update work itema";
   }
 }
 
@@ -229,7 +230,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
         const logData = res.data as { data?: { id?: string } };
 
         // Automatski označi work item da su sati uneseni
-        await markTimeTrackerEntered(workItemId, connectionProvider);
+        const markError = await markTimeTrackerEntered(workItemId, connectionProvider);
 
         return {
           content: [
@@ -244,6 +245,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
                   date: toTimestamp(date),
                   logId: logData?.data?.id ?? null,
                   comment: comment ?? null,
+                  markTimeTrackerError: markError,
                 },
                 null,
                 2
