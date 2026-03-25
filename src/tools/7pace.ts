@@ -174,31 +174,45 @@ function resolveActivityTypeId(activityType: ActivityType | undefined): string |
 }
 
 // Nakon uspješnog upisa sati, označi work item da su sati uneseni
-async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>, tokenProvider: () => Promise<string>, userAgent: string): Promise<string | null> {
+// Nakon uspješnog upisa sati, označi work item da su sati uneseni.
+// Koristi NTLM auth (mlukanic credentials) jer PAT token (tfssetupm) nema
+// write permission na custom polje Custom.NezaboraviunijetiTimeTracker.
+async function markTimeTrackerEntered(workItemId: number, connectionProvider: () => Promise<WebApi>, userAgent: string): Promise<string | null> {
   try {
-    const [connection, accessToken] = await Promise.all([connectionProvider(), tokenProvider()]);
+    const connection = await connectionProvider();
     const orgUrl = connection.serverUrl.replace(/\/$/, "");
-    const isBasicAuth = process.env["ADO_MCP_AUTH_TYPE"] === "basic";
-    const authHeader = isBasicAuth ? `Basic ${Buffer.from(":" + accessToken).toString("base64")}` : `Bearer ${accessToken}`;
+    const creds = getNtlmCredentials();
+    const apiVersion = process.env["ADO_MCP_API_VERSION"] ?? "6.0";
+    const url = `${orgUrl}/_apis/wit/workitems/${workItemId}?api-version=${apiVersion}`;
 
-    const patchDoc = [{ op: "add", path: "/fields/Custom.NezaboraviunijetiTimeTracker", value: "Unio sam vrijednost u Time Tracker" }];
+    const mod = await import("httpntlm");
+    const httpntlm = (mod.default ?? mod) as typeof import("httpntlm");
 
-    const response = await fetch(`${orgUrl}/_apis/wit/workitems/${workItemId}?api-version=6.0`, {
-      method: "PATCH",
-      headers: {
-        "Authorization": authHeader,
-        "Content-Type": "application/json-patch+json",
-        "Accept": "application/json",
-        "User-Agent": userAgent,
-      },
-      body: JSON.stringify(patchDoc),
+    return new Promise((resolve) => {
+      httpntlm.post(
+        {
+          url,
+          username: creds.username,
+          password: creds.password,
+          domain: creds.domain,
+          workstation: creds.workstation,
+          headers: {
+            "Content-Type": "application/json-patch+json",
+            "Accept": "application/json",
+            "User-Agent": userAgent,
+            "X-HTTP-Method-Override": "PATCH",
+          },
+          body: JSON.stringify([{ op: "add", path: "/fields/Custom.NezaboraviunijetiTimeTracker", value: "Unio sam vrijednost u Time Tracker" }]),
+        },
+        (err: Error | null, res: { statusCode: number; statusMessage: string; body: string }) => {
+          if (err) return resolve(err.message);
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return resolve(`HTTP ${res.statusCode} ${res.statusMessage}: ${res.body}`);
+          }
+          resolve(null);
+        }
+      );
     });
-
-    if (!response.ok) {
-      const text = await response.text();
-      return `HTTP ${response.status} ${response.statusText}: ${text}`;
-    }
-    return null;
   } catch (error) {
     return error instanceof Error ? error.message : "Nepoznata greška pri update work itema";
   }
@@ -206,7 +220,7 @@ async function markTimeTrackerEntered(workItemId: number, connectionProvider: ()
 
 // ─── Tool konfiguracija ───────────────────────────────────────────────────────
 
-function configure7paceTools(server: McpServer, tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
+function configure7paceTools(server: McpServer, _tokenProvider: () => Promise<string>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
   // ── 1. log_time ──────────────────────────────────────────────────────────────
   server.tool(
     SEVENP_TOOLS.log_time,
@@ -249,7 +263,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
         const logData = res.data as { data?: { id?: string } };
 
         // Automatski označi work item da su sati uneseni
-        const markError = await markTimeTrackerEntered(workItemId, connectionProvider, tokenProvider, userAgentProvider());
+        const markError = await markTimeTrackerEntered(workItemId, connectionProvider, userAgentProvider());
 
         return {
           content: [
@@ -327,7 +341,7 @@ function configure7paceTools(server: McpServer, tokenProvider: () => Promise<str
               results.push({ workItemId, hours: hoursPerTask, success: false, error: `HTTP ${res.status} ${res.statusText}` });
             } else {
               const logData = res.data as { data?: { id?: string } };
-              await markTimeTrackerEntered(workItemId, connectionProvider, tokenProvider, userAgentProvider());
+              await markTimeTrackerEntered(workItemId, connectionProvider, userAgentProvider());
               results.push({ workItemId, hours: hoursPerTask, success: true, logId: logData?.data?.id ?? undefined });
             }
           } catch (error) {
